@@ -143,51 +143,77 @@ automation:
         entity_id: input_boolean.attic_climate_control
         state: "on"
       - "{{ indoor is not none and eff_target is not none }}"
+    # Every device call is guarded with `if/then` so a command is only sent when
+    # the device is NOT already in the desired state. This stops the AC beeping
+    # on every 5-minute re-evaluation (the Pro Breeze beeps on each command).
     action:
       - choose:
           - conditions: "{{ not active }}"                       # 1) outside window
             sequence:
-              - service: climate.set_hvac_mode
-                target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
-                data: {hvac_mode: "off"}
-              - service: switch.turn_off
-                target: {entity_id: switch.attic_fan}
-          - conditions: "{{ window_open }}"                      # 2) window open
-            sequence:
-              - service: climate.set_hvac_mode
-                target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
-                data: {hvac_mode: "off"}
-              - choose:
-                  - conditions: "{{ indoor >= on_threshold and free_cooling }}"
-                    sequence:
-                      - service: switch.turn_on
-                        target: {entity_id: switch.attic_fan}
-                default:
+              - if: "{{ not is_state('climate.pro_breeze_12000_btu_air_conditioner','off') }}"
+                then:
+                  - service: climate.set_hvac_mode
+                    target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
+                    data: {hvac_mode: "off"}
+              - if: "{{ is_state('switch.attic_fan','on') }}"
+                then:
                   - service: switch.turn_off
                     target: {entity_id: switch.attic_fan}
+          - conditions: "{{ window_open }}"                      # 2) window open
+            sequence:
+              - if: "{{ not is_state('climate.pro_breeze_12000_btu_air_conditioner','off') }}"
+                then:
+                  - service: climate.set_hvac_mode
+                    target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
+                    data: {hvac_mode: "off"}
+              - if: "{{ indoor >= on_threshold and free_cooling }}"
+                then:
+                  - if: "{{ is_state('switch.attic_fan','off') }}"
+                    then:
+                      - service: switch.turn_on
+                        target: {entity_id: switch.attic_fan}
+                else:
+                  - if: "{{ is_state('switch.attic_fan','on') }}"
+                    then:
+                      - service: switch.turn_off
+                        target: {entity_id: switch.attic_fan}
           - conditions: "{{ indoor >= on_threshold and free_cooling }}"  # 3) free cool
             sequence:
-              - service: climate.set_hvac_mode
-                target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
-                data: {hvac_mode: "off"}
-              - service: switch.turn_on
-                target: {entity_id: switch.attic_fan}
+              - if: "{{ not is_state('climate.pro_breeze_12000_btu_air_conditioner','off') }}"
+                then:
+                  - service: climate.set_hvac_mode
+                    target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
+                    data: {hvac_mode: "off"}
+              - if: "{{ is_state('switch.attic_fan','off') }}"
+                then:
+                  - service: switch.turn_on
+                    target: {entity_id: switch.attic_fan}
           - conditions: "{{ indoor >= on_threshold }}"          # 4) run AC
             sequence:
-              - service: climate.set_temperature
-                target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
-                data:
-                  hvac_mode: cool
-                  temperature: "{{ eff_target }}"
-              - service: switch.turn_on
-                target: {entity_id: switch.attic_fan}
+              - if: >-
+                  {{ not (is_state('climate.pro_breeze_12000_btu_air_conditioner','cool')
+                     and state_attr('climate.pro_breeze_12000_btu_air_conditioner','temperature') | float(none) == eff_target) }}
+                then:
+                  - service: climate.set_temperature
+                    target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
+                    data:
+                      hvac_mode: cool
+                      temperature: "{{ eff_target }}"
+              - if: "{{ is_state('switch.attic_fan','off') }}"
+                then:
+                  - service: switch.turn_on
+                    target: {entity_id: switch.attic_fan}
           - conditions: "{{ indoor <= off_threshold }}"         # 5) cool enough
             sequence:
-              - service: climate.set_hvac_mode
-                target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
-                data: {hvac_mode: "off"}
-              - service: switch.turn_off
-                target: {entity_id: switch.attic_fan}
+              - if: "{{ not is_state('climate.pro_breeze_12000_btu_air_conditioner','off') }}"
+                then:
+                  - service: climate.set_hvac_mode
+                    target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
+                    data: {hvac_mode: "off"}
+              - if: "{{ is_state('switch.attic_fan','on') }}"
+                then:
+                  - service: switch.turn_off
+                    target: {entity_id: switch.attic_fan}
         # No default -> dead-band keeps current state (anti short-cycle).
 
   # Window prompts (mobile push, transition-based)

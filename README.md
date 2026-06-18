@@ -94,6 +94,9 @@ folder, then restart Home Assistant.
 - Push notifications go to `notify.mobile_app_kens_iphone` (the HA companion app
   on the iPhone). If the phone is renamed or re-registered, update that service
   name in `packages/attic_office_climate.yaml`.
+- The control automation only sends a command when the AC/fan isn't already in
+  the desired state (idempotent `if/then` guards). This prevents the Pro Breeze
+  from beeping on every periodic re-evaluation.
 - `climate.set_temperature` is called with an inline `hvac_mode: cool`, which
   requires a reasonably recent HA core. If your AC integration rejects it, split
   it into a `climate.set_hvac_mode` (`cool`) step followed by
