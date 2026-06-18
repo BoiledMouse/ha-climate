@@ -30,8 +30,9 @@ It decides in priority order:
    the outdoor air is cooler (i.e. the open window is actually helping).
 3. **Warm, window shut, outside cooler** → AC stays off, fan runs (free cooling);
    you get a push to **open the window**.
-4. **Warm, outside not cooler** → AC switches to `cool` at the effective target,
-   fan runs to circulate the cold air.
+4. **Warm, outside not cooler** → AC switches to `cool` at the effective target;
+   the room fan turns **off** (running both is too noisy — the AC's own fan does
+   the work).
 5. **Cool enough** → AC off, fan off.
 6. **In between** the on/off thresholds nothing changes — a hysteresis dead-band
    that stops the AC short-cycling.
