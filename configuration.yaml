@@ -1,0 +1,10 @@
+# Minimal Home Assistant configuration for a fresh install.
+#
+# If you already have a configuration.yaml, DO NOT overwrite it — just add the
+# `homeassistant: packages: !include_dir_named packages` block below (or copy
+# packages/attic_office_climate.yaml into your existing packages directory).
+
+default_config:
+
+homeassistant:
+  packages: !include_dir_named packages

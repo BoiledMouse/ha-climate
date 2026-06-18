@@ -1,0 +1,233 @@
+# Keeps the attic office at a configurable target (~24 °C) while running the
+# portable AC as little as possible. Prefers free cooling (open window + fan)
+# when outdoor air is cooler, pre-cools before the work day, and sends mobile
+# prompts to open/close the window.
+
+# ---- Tunable helpers -------------------------------------------------------
+input_number:
+  attic_target_temp:
+    name: Attic target temperature
+    min: 18
+    max: 28
+    step: 0.5
+    unit_of_measurement: "°C"
+    icon: mdi:thermometer
+    initial: 24
+  attic_temp_tolerance:          # hysteresis half-band
+    name: Attic temperature tolerance
+    min: 0.2
+    max: 3
+    step: 0.1
+    unit_of_measurement: "°C"
+    icon: mdi:arrow-expand-vertical
+    initial: 0.5
+  attic_free_cooling_delta:      # outdoor must be this far below room to free-cool
+    name: Attic free-cooling delta
+    min: 0.5
+    max: 5
+    step: 0.5
+    unit_of_measurement: "°C"
+    icon: mdi:weather-windy
+    initial: 1.5
+  attic_precool_offset:          # how far below target to pre-cool
+    name: Attic pre-cool offset
+    min: 0
+    max: 5
+    step: 0.5
+    unit_of_measurement: "°C"
+    icon: mdi:snowflake
+    initial: 1
+
+input_boolean:
+  attic_climate_control:
+    name: Attic climate automation enabled
+    icon: mdi:home-thermometer
+
+input_datetime:
+  attic_office_precool_start:
+    name: Attic pre-cool start time
+    has_date: false
+    has_time: true
+    initial: "06:00:00"
+  attic_office_start:
+    name: Attic office start time
+    has_date: false
+    has_time: true
+    initial: "08:00:00"
+  attic_office_end:
+    name: Attic office end time
+    has_date: false
+    has_time: true
+    initial: "18:00:00"
+
+# ---- Derived values (template) --------------------------------------------
+template:
+  - sensor:
+      - name: Attic effective target temperature
+        unique_id: attic_effective_target_temperature
+        unit_of_measurement: "°C"
+        state: >-
+          {% set t = states('input_number.attic_target_temp') | float(24) %}
+          {% set off = states('input_number.attic_precool_offset') | float(1) %}
+          {% set ps = today_at(states('input_datetime.attic_office_precool_start')) %}
+          {% set ws = today_at(states('input_datetime.attic_office_start')) %}
+          {{ (t - off) if (ps <= now() < ws) else t }}
+  - binary_sensor:
+      - name: Attic open window hint
+        unique_id: attic_open_window_hint
+        # Warm room, window shut, outside cool enough to free-cool.
+        state: >-
+          {% set indoor = states('sensor.attic_environment_temperature') | float(none) %}
+          {% set outdoor = states('sensor.hue_outdoor_motion_sensor_1_temperature') | float(none) %}
+          {% set tgt = states('sensor.attic_effective_target_temperature') | float(none) %}
+          {% set tol = states('input_number.attic_temp_tolerance') | float(0.5) %}
+          {% set delta = states('input_number.attic_free_cooling_delta') | float(1.5) %}
+          {% set ps = today_at(states('input_datetime.attic_office_precool_start')) %}
+          {% set we = today_at(states('input_datetime.attic_office_end')) %}
+          {{ (ps <= now() <= we)
+             and is_state('binary_sensor.attic_window_contact','off')
+             and indoor is not none and tgt is not none and outdoor is not none
+             and indoor >= (tgt + tol) and outdoor < (indoor - delta) }}
+      - name: Attic close window hint
+        unique_id: attic_close_window_hint
+        # Warm room, window open, but outside NOT cooler -> AC is blocked.
+        state: >-
+          {% set indoor = states('sensor.attic_environment_temperature') | float(none) %}
+          {% set outdoor = states('sensor.hue_outdoor_motion_sensor_1_temperature') | float(none) %}
+          {% set tgt = states('sensor.attic_effective_target_temperature') | float(none) %}
+          {% set tol = states('input_number.attic_temp_tolerance') | float(0.5) %}
+          {% set delta = states('input_number.attic_free_cooling_delta') | float(1.5) %}
+          {% set ps = today_at(states('input_datetime.attic_office_precool_start')) %}
+          {% set we = today_at(states('input_datetime.attic_office_end')) %}
+          {{ (ps <= now() <= we)
+             and is_state('binary_sensor.attic_window_contact','on')
+             and indoor is not none and tgt is not none and outdoor is not none
+             and indoor >= (tgt + tol) and not (outdoor < (indoor - delta)) }}
+
+# ---- Automations -----------------------------------------------------------
+automation:
+  # Equipment control
+  - id: attic_office_climate_control
+    alias: Attic office climate control
+    mode: single
+    max_exceeded: silent
+    trigger:
+      - platform: state
+        entity_id:
+          - sensor.attic_environment_temperature
+          - sensor.hue_outdoor_motion_sensor_1_temperature
+          - binary_sensor.attic_window_contact
+          - input_boolean.attic_climate_control
+      - platform: time_pattern
+        minutes: "/5"
+      - platform: time
+        at:
+          - input_datetime.attic_office_precool_start
+          - input_datetime.attic_office_start
+          - input_datetime.attic_office_end
+    variables:
+      indoor: "{{ states('sensor.attic_environment_temperature') | float(none) }}"
+      outdoor: "{{ states('sensor.hue_outdoor_motion_sensor_1_temperature') | float(none) }}"
+      eff_target: "{{ states('sensor.attic_effective_target_temperature') | float(none) }}"
+      tol: "{{ states('input_number.attic_temp_tolerance') | float(0.5) }}"
+      delta: "{{ states('input_number.attic_free_cooling_delta') | float(1.5) }}"
+      on_threshold: "{{ eff_target + tol }}"
+      off_threshold: "{{ eff_target - tol }}"
+      window_open: "{{ is_state('binary_sensor.attic_window_contact','on') }}"
+      free_cooling: "{{ outdoor is not none and indoor is not none and outdoor < (indoor - delta) }}"
+      active: >-
+        {{ today_at(states('input_datetime.attic_office_precool_start')) <= now()
+           <= today_at(states('input_datetime.attic_office_end')) }}
+    condition:
+      - condition: state
+        entity_id: input_boolean.attic_climate_control
+        state: "on"
+      - "{{ indoor is not none and eff_target is not none }}"
+    action:
+      - choose:
+          - conditions: "{{ not active }}"                       # 1) outside window
+            sequence:
+              - service: climate.set_hvac_mode
+                target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
+                data: {hvac_mode: "off"}
+              - service: switch.turn_off
+                target: {entity_id: switch.attic_fan}
+          - conditions: "{{ window_open }}"                      # 2) window open
+            sequence:
+              - service: climate.set_hvac_mode
+                target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
+                data: {hvac_mode: "off"}
+              - choose:
+                  - conditions: "{{ indoor >= on_threshold and free_cooling }}"
+                    sequence:
+                      - service: switch.turn_on
+                        target: {entity_id: switch.attic_fan}
+                default:
+                  - service: switch.turn_off
+                    target: {entity_id: switch.attic_fan}
+          - conditions: "{{ indoor >= on_threshold and free_cooling }}"  # 3) free cool
+            sequence:
+              - service: climate.set_hvac_mode
+                target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
+                data: {hvac_mode: "off"}
+              - service: switch.turn_on
+                target: {entity_id: switch.attic_fan}
+          - conditions: "{{ indoor >= on_threshold }}"          # 4) run AC
+            sequence:
+              - service: climate.set_temperature
+                target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
+                data:
+                  hvac_mode: cool
+                  temperature: "{{ eff_target }}"
+              - service: switch.turn_on
+                target: {entity_id: switch.attic_fan}
+          - conditions: "{{ indoor <= off_threshold }}"         # 5) cool enough
+            sequence:
+              - service: climate.set_hvac_mode
+                target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
+                data: {hvac_mode: "off"}
+              - service: switch.turn_off
+                target: {entity_id: switch.attic_fan}
+        # No default -> dead-band keeps current state (anti short-cycle).
+
+  # Window prompts (mobile push, transition-based)
+  - id: attic_office_window_prompts
+    alias: Attic office window prompts
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.attic_open_window_hint
+        to: "on"
+        for: {minutes: 2}
+        id: open
+      - platform: state
+        entity_id: binary_sensor.attic_close_window_hint
+        to: "on"
+        for: {minutes: 2}
+        id: close
+    condition:
+      - condition: state
+        entity_id: input_boolean.attic_climate_control
+        state: "on"
+    action:
+      - choose:
+          - conditions: "{{ trigger.id == 'open' }}"
+            sequence:
+              - service: notify.mobile_app_kens_iphone
+                data:
+                  title: "Attic office — open the window"
+                  message: >-
+                    {{ states('sensor.attic_environment_temperature') }}°C inside vs
+                    {{ states('sensor.hue_outdoor_motion_sensor_1_temperature') }}°C outside —
+                    open the attic window to cool down without the AC.
+                  data: {tag: attic_window}
+          - conditions: "{{ trigger.id == 'close' }}"
+            sequence:
+              - service: notify.mobile_app_kens_iphone
+                data:
+                  title: "Attic office — close the window"
+                  message: >-
+                    Window is open but it's warmer outside
+                    ({{ states('sensor.hue_outdoor_motion_sensor_1_temperature') }}°C) —
+                    close it so the AC can cool the room.
+                  data: {tag: attic_window}
