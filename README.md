@@ -44,6 +44,15 @@ that window the *effective target* is lowered by the pre-cool offset
 (`target − offset`, default 1 °C) so the attic starts the day a little cooler.
 Free cooling is still preferred; the AC only fills the gap.
 
+**Free-cooling give-up (pre-cool only):** if the room is warm and outside is
+cooler, the automation pushes you to open the window and waits. If it's *still*
+too warm after `attic_freecool_giveup_minutes` (default 20), it gives up on free
+cooling for the rest of the pre-cool period: if the window is open it pushes you
+to **close it**, and once the window is shut the **AC runs** (with normal
+hysteresis) until the pre-cool window ends. The override resets automatically at
+the start of the work day. While it's in this give-up state it stops nagging you
+to open the window.
+
 ### Window notifications
 
 A second automation (`Attic office window prompts`) sends a phone push to:
@@ -51,9 +60,11 @@ A second automation (`Attic office window prompts`) sends a phone push to:
 - **Open** the window when free cooling is available (room warm, outside cooler).
 - **Close** the window when it's open but the outside air is *not* cooler, so the
   AC can take over.
+- **Close the window for the AC** when free cooling has been given up during
+  pre-cool (see above).
 
-Each prompt only fires after the condition holds for 2 minutes (no spam), and the
-two share a notification `tag` so they replace each other rather than stack.
+Each prompt only fires after the condition holds for 2 minutes (no spam), and they
+share a notification `tag` so they replace each other rather than stack.
 
 ## Tunable helpers
 
@@ -65,13 +76,16 @@ All exposed in the UI (Settings → Devices & Services → Helpers):
 | `input_number.attic_temp_tolerance` | 0.5 °C | Hysteresis half-band (AC on at +tol, off at −tol) |
 | `input_number.attic_free_cooling_delta` | 1.5 °C | How far below the room the outside must be to free-cool |
 | `input_number.attic_precool_offset` | 1 °C | How far below target to pre-cool |
+| `input_number.attic_freecool_giveup_minutes` | 20 min | Free-cooling wait before the AC takes over (pre-cool only) |
 | `input_datetime.attic_office_precool_start` | 06:00 | Pre-cool window start |
 | `input_datetime.attic_office_start` | 08:00 | Work window start |
 | `input_datetime.attic_office_end` | 18:00 | Work/pre-cool window end |
-| `input_boolean.attic_climate_control` | — | Master on/off for both automations |
+| `input_boolean.attic_climate_control` | — | Master on/off for the automations |
+| `input_boolean.attic_precool_ac_override` | — | Auto-managed give-up latch (don't toggle by hand) |
 
 Turn `input_boolean.attic_climate_control` **on** to enable the system; turning it
-off makes both automations no-op.
+off makes the automations no-op. (`attic_precool_ac_override` and the
+`attic_freecool_giveup` timer are managed automatically — leave them alone.)
 
 ## Installation
 

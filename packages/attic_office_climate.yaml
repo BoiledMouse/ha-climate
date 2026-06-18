@@ -37,11 +37,27 @@ input_number:
     unit_of_measurement: "°C"
     icon: mdi:snowflake
     initial: 1
+  attic_freecool_giveup_minutes: # how long to wait for free cooling before using the AC (pre-cool only)
+    name: Attic free-cooling give-up minutes
+    min: 5
+    max: 120
+    step: 5
+    unit_of_measurement: min
+    icon: mdi:timer-sand
+    initial: 20
 
 input_boolean:
   attic_climate_control:
     name: Attic climate automation enabled
     icon: mdi:home-thermometer
+  attic_precool_ac_override:     # latch: gave up on free cooling, allow AC for the rest of pre-cool
+    name: Attic pre-cool AC override
+    icon: mdi:air-conditioner
+
+timer:
+  attic_freecool_giveup:
+    name: Attic free-cooling give-up timer
+    restore: true
 
 input_datetime:
   attic_office_precool_start:
@@ -86,6 +102,7 @@ template:
           {% set we = today_at(states('input_datetime.attic_office_end')) %}
           {{ (ps <= now() <= we)
              and is_state('binary_sensor.attic_window_contact','off')
+             and is_state('input_boolean.attic_precool_ac_override','off')
              and indoor is not none and tgt is not none and outdoor is not none
              and indoor >= (tgt + tol) and outdoor < (indoor - delta) }}
       - name: Attic close window hint
@@ -103,6 +120,36 @@ template:
              and is_state('binary_sensor.attic_window_contact','on')
              and indoor is not none and tgt is not none and outdoor is not none
              and indoor >= (tgt + tol) and not (outdoor < (indoor - delta)) }}
+      - name: Attic precool freecooling active
+        unique_id: attic_precool_freecooling_active
+        # In the pre-cool period, room is too warm and outside is cooler -> we are
+        # (or should be) free-cooling. Runs the give-up countdown. Window-agnostic.
+        state: >-
+          {% set indoor = states('sensor.attic_environment_temperature') | float(none) %}
+          {% set outdoor = states('sensor.hue_outdoor_motion_sensor_1_temperature') | float(none) %}
+          {% set tgt = states('sensor.attic_effective_target_temperature') | float(none) %}
+          {% set tol = states('input_number.attic_temp_tolerance') | float(0.5) %}
+          {% set delta = states('input_number.attic_free_cooling_delta') | float(1.5) %}
+          {% set ps = today_at(states('input_datetime.attic_office_precool_start')) %}
+          {% set ws = today_at(states('input_datetime.attic_office_start')) %}
+          {{ (ps <= now() < ws)
+             and indoor is not none and tgt is not none and outdoor is not none
+             and indoor >= (tgt + tol) and outdoor < (indoor - delta) }}
+      - name: Attic precool close window hint
+        unique_id: attic_precool_close_window_hint
+        # Gave up on free cooling, but the window is still open -> nudge to close it
+        # so the AC can take over.
+        state: >-
+          {% set indoor = states('sensor.attic_environment_temperature') | float(none) %}
+          {% set tgt = states('sensor.attic_effective_target_temperature') | float(none) %}
+          {% set tol = states('input_number.attic_temp_tolerance') | float(0.5) %}
+          {% set ps = today_at(states('input_datetime.attic_office_precool_start')) %}
+          {% set ws = today_at(states('input_datetime.attic_office_start')) %}
+          {{ (ps <= now() < ws)
+             and is_state('input_boolean.attic_precool_ac_override','on')
+             and is_state('binary_sensor.attic_window_contact','on')
+             and indoor is not none and tgt is not none
+             and indoor >= (tgt + tol) }}
 
 # ---- Automations -----------------------------------------------------------
 automation:
@@ -138,6 +185,9 @@ automation:
       active: >-
         {{ today_at(states('input_datetime.attic_office_precool_start')) <= now()
            <= today_at(states('input_datetime.attic_office_end')) }}
+      in_precool: >-
+        {{ today_at(states('input_datetime.attic_office_precool_start')) <= now()
+           < today_at(states('input_datetime.attic_office_start')) }}
     condition:
       - condition: state
         entity_id: input_boolean.attic_climate_control
@@ -159,6 +209,51 @@ automation:
                 then:
                   - service: switch.turn_off
                     target: {entity_id: switch.attic_fan}
+          - conditions: "{{ in_precool and is_state('input_boolean.attic_precool_ac_override','on') }}"
+            # 1b) Pre-cool give-up: free cooling has been tried for the give-up
+            # window and it's still too warm -> use the AC for the rest of pre-cool.
+            sequence:
+              - choose:
+                  - conditions: "{{ window_open }}"             # AC blocked; nudge to close (push elsewhere)
+                    sequence:
+                      - if: "{{ not is_state('climate.pro_breeze_12000_btu_air_conditioner','off') }}"
+                        then:
+                          - service: climate.set_hvac_mode
+                            target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
+                            data: {hvac_mode: "off"}
+                      - if: "{{ is_state('switch.attic_fan','off') }}"
+                        then:
+                          - service: switch.turn_on
+                            target: {entity_id: switch.attic_fan}
+                default:                                         # window closed -> AC (hysteresis), fan off
+                  - choose:
+                      - conditions: "{{ indoor >= on_threshold }}"
+                        sequence:
+                          - if: >-
+                              {{ not (is_state('climate.pro_breeze_12000_btu_air_conditioner','cool')
+                                 and state_attr('climate.pro_breeze_12000_btu_air_conditioner','temperature') | float(none) == eff_target) }}
+                            then:
+                              - service: climate.set_temperature
+                                target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
+                                data:
+                                  hvac_mode: cool
+                                  temperature: "{{ eff_target }}"
+                          - if: "{{ is_state('switch.attic_fan','on') }}"
+                            then:
+                              - service: switch.turn_off
+                                target: {entity_id: switch.attic_fan}
+                      - conditions: "{{ indoor <= off_threshold }}"
+                        sequence:
+                          - if: "{{ not is_state('climate.pro_breeze_12000_btu_air_conditioner','off') }}"
+                            then:
+                              - service: climate.set_hvac_mode
+                                target: {entity_id: climate.pro_breeze_12000_btu_air_conditioner}
+                                data: {hvac_mode: "off"}
+                          - if: "{{ is_state('switch.attic_fan','on') }}"
+                            then:
+                              - service: switch.turn_off
+                                target: {entity_id: switch.attic_fan}
+                    # deadband: leave equipment as-is
           - conditions: "{{ window_open }}"                      # 2) window open
             sequence:
               - if: "{{ not is_state('climate.pro_breeze_12000_btu_air_conditioner','off') }}"
@@ -216,6 +311,56 @@ automation:
                     target: {entity_id: switch.attic_fan}
         # No default -> dead-band keeps current state (anti short-cycle).
 
+  # Pre-cool free-cooling give-up: after N minutes of unsuccessful free cooling,
+  # latch the AC override so the AC runs for the rest of the pre-cool period.
+  - id: attic_precool_freecool_giveup
+    alias: Attic pre-cool free-cooling give-up
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.attic_precool_freecooling_active
+        to: "on"
+        id: start
+      - platform: state
+        entity_id: binary_sensor.attic_precool_freecooling_active
+        to: "off"
+        id: stop
+      - platform: event
+        event_type: timer.finished
+        event_data: {entity_id: timer.attic_freecool_giveup}
+        id: giveup
+      - platform: time
+        at: input_datetime.attic_office_start          # end of pre-cool -> reset
+        id: precool_end
+    condition:
+      - condition: state
+        entity_id: input_boolean.attic_climate_control
+        state: "on"
+    action:
+      - choose:
+          - conditions: >-
+              {{ trigger.id == 'start'
+                 and is_state('input_boolean.attic_precool_ac_override','off') }}
+            sequence:
+              - service: timer.start
+                target: {entity_id: timer.attic_freecool_giveup}
+                data:
+                  duration: "{{ (states('input_number.attic_freecool_giveup_minutes') | int(20)) * 60 }}"
+          - conditions: "{{ trigger.id == 'stop' }}"
+            sequence:
+              - service: timer.cancel
+                target: {entity_id: timer.attic_freecool_giveup}
+          - conditions: "{{ trigger.id == 'giveup' }}"
+            sequence:
+              - service: input_boolean.turn_on
+                target: {entity_id: input_boolean.attic_precool_ac_override}
+          - conditions: "{{ trigger.id == 'precool_end' }}"
+            sequence:
+              - service: input_boolean.turn_off
+                target: {entity_id: input_boolean.attic_precool_ac_override}
+              - service: timer.cancel
+                target: {entity_id: timer.attic_freecool_giveup}
+
   # Window prompts (mobile push, transition-based)
   - id: attic_office_window_prompts
     alias: Attic office window prompts
@@ -231,6 +376,11 @@ automation:
         to: "on"
         for: {minutes: 2}
         id: close
+      - platform: state
+        entity_id: binary_sensor.attic_precool_close_window_hint
+        to: "on"
+        for: {minutes: 2}
+        id: precool_close
     condition:
       - condition: state
         entity_id: input_boolean.attic_climate_control
@@ -256,4 +406,13 @@ automation:
                     Window is open but it's warmer outside
                     ({{ states('sensor.hue_outdoor_motion_sensor_1_temperature') }}°C) —
                     close it so the AC can cool the room.
+                  data: {tag: attic_window}
+          - conditions: "{{ trigger.id == 'precool_close' }}"
+            sequence:
+              - service: notify.mobile_app_kens_iphone
+                data:
+                  title: "Attic office — close the window for the AC"
+                  message: >-
+                    Free cooling hasn't cooled the office enough — close the attic
+                    window and the AC will take over for the rest of the pre-cool period.
                   data: {tag: attic_window}
